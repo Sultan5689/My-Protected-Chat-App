@@ -319,10 +319,13 @@
                     messageElement.classList.add('bg-gray-200', 'text-gray-800');
                 }
                 
-                messageElement.innerHTML = `
-                    <div class="font-semibold text-sm mb-1">${sender}</div>
-                    <p class="text-sm">${message}</p>
-                `;
+                const senderElement = document.createElement('div');
+                senderElement.classList.add('font-semibold', 'text-sm', 'mb-1');
+                senderElement.textContent = String(sender ?? '');
+                const textElement = document.createElement('p');
+                textElement.classList.add('text-sm');
+                textElement.textContent = String(message ?? '');
+                messageElement.replaceChildren(senderElement, textElement);
                 messagesContainer.appendChild(messageElement);
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
             }
