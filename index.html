@@ -173,11 +173,11 @@
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-24 h-24 text-red-600 mx-auto mb-6 rounded-lg shadow-lg">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
             </svg>
-            <h2 class="text-2xl font-bold mb-4 text-gray-800">أدخل كلمة السر</h2>
-            <p class="text-gray-600 mb-6">هذا التطبيق محمي بكلمة سر.</p>
-            <input type="password" id="passwordInput" placeholder="أدخل كلمة السر هنا" class="w-full p-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-red-500 transition-colors">
+            <h2 id="passwordTitle" class="text-2xl font-bold mb-4 text-gray-800">كلمة مرور هذا الجهاز</h2>
+            <p id="passwordHelp" class="text-gray-600 mb-6">أنشئ كلمة مرور خاصة بهذا الجهاز عند الاستخدام الأول.</p>
+            <input type="password" id="passwordInput" placeholder="أدخل كلمة مرور قوية" autocomplete="current-password" class="w-full p-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-red-500 transition-colors">
             <button id="accessChatBtn" class="chat-button w-full mt-4 bg-red-500 text-white font-semibold py-3 px-6 rounded-lg hover:bg-red-600 transition-colors">
-                ادخل
+                متابعة
             </button>
         </div>
     </div>
@@ -275,8 +275,84 @@
             let userNickname = null;
             let nicknameSet = false;
             
-            // كلمة السر السرية، يمكنك تغييرها هنا
-            const SECRET_PASSWORD = "1234";
+            // Per-device local access lock. This is not server authentication or end-to-end encryption.
+            const LOCK_STORAGE_KEY = 'protectedChatLockV1';
+            const PBKDF2_ITERATIONS = 310000;
+
+            function bytesToBase64(bytes) {
+                return btoa(String.fromCharCode(...bytes));
+            }
+
+            function base64ToBytes(value) {
+                return Uint8Array.from(atob(value), char => char.charCodeAt(0));
+            }
+
+            async function derivePasswordHash(password, salt) {
+                const material = await crypto.subtle.importKey(
+                    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+                );
+                const bits = await crypto.subtle.deriveBits(
+                    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+                    material,
+                    256
+                );
+                return Array.from(new Uint8Array(bits), byte => byte.toString(16).padStart(2, '0')).join('');
+            }
+
+            function configurePasswordPrompt() {
+                const isSetup = !localStorage.getItem(LOCK_STORAGE_KEY);
+                document.getElementById('passwordTitle').textContent = isSetup
+                    ? 'أنشئ كلمة مرور لهذا الجهاز'
+                    : 'أدخل كلمة مرور هذا الجهاز';
+                document.getElementById('passwordHelp').textContent = isSetup
+                    ? 'اختر كلمة مرور لا تقل عن 10 أحرف. لا تُرسل كلمة المرور إلى أي خادم.'
+                    : 'أدخل كلمة المرور التي أنشأتها على هذا الجهاز.';
+                passwordInput.autocomplete = isSetup ? 'new-password' : 'current-password';
+                accessChatBtn.textContent = isSetup ? 'إنشاء كلمة المرور' : 'فتح الدردشة';
+            }
+
+            async function verifyOrCreateLocalPassword(password) {
+                if (!window.crypto || !crypto.subtle) {
+                    throw new Error('يتطلب قفل الجهاز اتصالاً آمناً عبر HTTPS ومتصفحاً يدعم Web Crypto.');
+                }
+                const storedValue = localStorage.getItem(LOCK_STORAGE_KEY);
+                if (!storedValue) {
+                    if (password.length < 10) {
+                        showNotification('اختر كلمة مرور لا تقل عن 10 أحرف.');
+                        return false;
+                    }
+                    const salt = crypto.getRandomValues(new Uint8Array(16));
+                    const hash = await derivePasswordHash(password, salt);
+                    localStorage.setItem(LOCK_STORAGE_KEY, JSON.stringify({
+                        version: 1,
+                        iterations: PBKDF2_ITERATIONS,
+                        salt: bytesToBase64(salt),
+                        hash
+                    }));
+                    return true;
+                }
+
+                let stored;
+                try {
+                    stored = JSON.parse(storedValue);
+                } catch {
+                    throw new Error('بيانات قفل الجهاز تالفة. امسح بيانات الموقع لإعادة الإعداد.');
+                }
+                if (stored.version !== 1 || !stored.salt || !stored.hash) {
+                    throw new Error('إصدار قفل الجهاز غير صالح.');
+                }
+                const salt = base64ToBytes(stored.salt);
+                const material = await crypto.subtle.importKey(
+                    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+                );
+                const bits = await crypto.subtle.deriveBits(
+                    { name: 'PBKDF2', salt, iterations: Number(stored.iterations) || PBKDF2_ITERATIONS, hash: 'SHA-256' },
+                    material,
+                    256
+                );
+                const candidate = Array.from(new Uint8Array(bits), byte => byte.toString(16).padStart(2, '0')).join('');
+                return candidate === stored.hash;
+            }
 
             const loadingMessages = [
                 "يتم تحميل الواجهة...",
@@ -350,14 +426,28 @@
                 backgroundMusic.play().catch(e => console.error("فشل تشغيل الموسيقى التلقائي:", e));
             }
 
-            // 2. Handle password entry
-            accessChatBtn.addEventListener('click', () => {
-                const enteredPassword = passwordInput.value.trim();
-                if (enteredPassword === SECRET_PASSWORD) {
-                    passwordModal.classList.add('hidden');
-                    nicknameModal.classList.remove('hidden'); // Show nickname modal after correct password
-                } else {
-                    showNotification('كلمة السر خاطئة. حاول مرة أخرى.');
+            // 2. Create or verify the per-device password
+            configurePasswordPrompt();
+            accessChatBtn.addEventListener('click', async () => {
+                const enteredPassword = passwordInput.value;
+                if (!enteredPassword) {
+                    showNotification('أدخل كلمة المرور أولاً.');
+                    return;
+                }
+                accessChatBtn.disabled = true;
+                try {
+                    const valid = await verifyOrCreateLocalPassword(enteredPassword);
+                    if (valid) {
+                        passwordInput.value = '';
+                        passwordModal.classList.add('hidden');
+                        nicknameModal.classList.remove('hidden');
+                    } else {
+                        showNotification('كلمة المرور غير صحيحة.');
+                    }
+                } catch (error) {
+                    showNotification(error?.message || 'تعذر التحقق من كلمة المرور.');
+                } finally {
+                    accessChatBtn.disabled = false;
                 }
             });
 
